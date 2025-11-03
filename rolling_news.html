@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rolling News Feed</title>
+    <!-- 1. Load Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Load PapaParse to read the CSV data from Google Sheets -->
+    <script src="./papaparse.min.js"></script>
+    <!-- 3. Load Day.js to easily handle date and time comparisons -->
+    <script src="./dayjs.min.js"></script>
+    
+    <style>
+        /* Base styles */
+        body {
+            font-family: 'Inter', sans-serif; /* Using a font consistent with your index.html */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white font-sans overflow-hidden">
+
+    <div id="feed-container" class="relative w-full h-screen overflow-hidden">
+        <div id="feed-track" class="absolute top-0 left-0 w-full h-full">
+            <!-- Feed items will be injected here by JavaScript -->
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.7/firebase-app.js";
+        import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.6.7/firebase-firestore.js";
+
+        // --- CONFIGURATION ---
+
+        // URL for your Google Sheet, published as a CSV
+        const SHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT0VotPZTFkALWoh6U6g6WnfqsVeltkkjCkd5CBVAHh60e-A63h5HdzaSVamSjkcxveTOfycKZ2K66r/pub?gid=248750333&single=true&output=csv';
+        
+        // How often to check for new data (in milliseconds)
+        const REFRESH_INTERVAL_MS = 600000; // 10 minutes
+        
+        // This will be set by Firebase (default to 20s)
+        let SECONDS_PER_ITEM = 20;
+
+        // Firebase config (copied from your index.html)
+        const firebaseConfig = {
+          apiKey: "AIzaSyCew0RUOwuFT-rplkh6h80UBnKPOfrn7qo",
+          authDomain: "stfd-dashboard.firebaseapp.com",
+          projectId: "stfd-dashboard",
+          storageBucket: "stfd-dashboard.firebasestorage.app",
+          messagingSenderId: "54058446605",
+          appId: "1:54058446605:web:ec492afcb8620109628a44",
+          measurementId: "G-4N22BEGSF7"
+        };
+
+        // --- APPLICATION ---
+
+        const feedContainer = document.getElementById('feed-container');
+        const feedTrack = document.getElementById('feed-track');
+
+        let db;
+        let configDocRef;
+        let activePostCount = 0; // Keep track of the post count
+
+        // --- Slideshow State ---
+        let currentSlideIndex = 0;
+        let slideInterval = null;
+
+        /**
+         * Main function to fetch, parse, filter, and display the feed.
+         */
+        async function updateFeed() {
+            console.log('[NewsFeed] Fetching new data...');
+            
+            Papa.parse(SHEET_URL, {
+                download: true,
+                header: true,
+                skipEmptyLines: true,
+                complete: (results) => {
+                    try {
+                        const activePosts = filterActivePosts(results.data);
+                        activePostCount = activePosts.length; // Store the count
+                        
+                        // *** NEW: Report duration to parent ***
+                        reportDurationToParent();
+
+                        renderFeed(activePosts);
+                    } catch (error) {
+                        console.error('[NewsFeed] Error processing data:', error);
+                        displayError('Could not process feed data.');
+                    }
+                },
+                error: (err) => {
+                    console.error('[NewsFeed] Error fetching CSV:', err);
+                    displayError('Could not fetch data from Google Sheet.');
+                }
+            });
+        }
+
+        /**
+         * Calculates total duration and sends a postMessage to the parent window.
+         */
+        function reportDurationToParent() {
+            const totalDurationMs = activePostCount * SECONDS_PER_ITEM * 1000;
+            console.log(`[NewsFeed] Reporting ${activePostCount} posts at ${SECONDS_PER_ITEM}s/each. Total duration: ${totalDurationMs}ms`);
+            
+            // Send this info to the parent window (index.html)
+            window.parent.postMessage({ 
+                type: 'newsFeedDuration', 
+                totalDuration: totalDurationMs 
+            }, '*'); // Use '*' for simplicity, but a specific origin is safer in production
+        }
+
+        /**
+         * Filters the list of posts to only include those that are
+         * currently active based on their post and remove dates.
+         */
+        function filterActivePosts(posts) {
+            const now = dayjs();
+            console.log(`[NewsFeed] Filtering ${posts.length} total posts at time: ${now.format()}`);
+            
+            return posts.filter((post, index) => {
+                const title = post['Title *'];
+                const postDateStr = post['Date/Time to Post'];
+                const removeDateStr = post['Date to Remove'];
+
+                if (!title) {
+                    console.log(`[NewsFeed] Post ${index} REJECTED: Missing 'Title *'.`);
+                    return false;
+                }
+                if (!postDateStr) {
+                    console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: Missing 'Date/Time to Post'.`);
+                    return false;
+                }
+
+                const postDate = dayjs(postDateStr);
+                if (!postDate.isValid()) {
+                    console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: 'Date/Time to Post' is invalid ("${postDateStr}"). Check format.`);
+                    return false;
+                }
+                if (!now.isAfter(postDate)) {
+                    console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: Not time to post yet (Post: ${postDate.format()} | Now: ${now.format()}).`);
+                    return false;
+                }
+                if (removeDateStr) {
+                    const removeDate = dayjs(removeDateStr);
+                    if (removeDate.isValid() && now.isAfter(removeDate)) {
+                        console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: Past remove date (Remove: ${removeDate.format()} | Now: ${now.format()}).`);
+                        return false;
+                    }
+                }
+                console.log(`[NewsFeed] Post ${index} ("${title}") APPROVED.`);
+                return true;
+            });
+        }
+
+        /**
+         * Renders the feed items onto the screen and starts the animation.
+         */
+        function renderFeed(posts) {
+            if (slideInterval) clearInterval(slideInterval);
+            feedTrack.innerHTML = '';
+
+            if (posts.length === 0) {
+                feedContainer.innerHTML = `
+                    <div class="w-full h-screen flex justify-center items-center text-center p-10">
+                        <h1 class="text-6xl text-gray-500">No Active Announcements</h1>
+                    </div>
+                `;
+                return;
+            }
+
+            if (feedContainer.innerHTML.includes('No Active Announcements') || feedContainer.innerHTML.includes('Error')) {
+                feedContainer.innerHTML = ''; 
+                feedContainer.appendChild(feedTrack);
+            }
+            
+            let itemsHtml = '';
+            posts.forEach(post => {
+                itemsHtml += `
+                    <div class="feed-item w-full h-screen absolute top-0 left-0 flex flex-col justify-center items-center text-center p-20
+                                opacity-0 transition-opacity duration-1000 ease-in-out">
+                        <h1 class="text-8xl font-bold mb-8 text-cyan-300" style="text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">
+                            ${post['Title *']}
+                        </h1>
+                        <p class="text-6xl mb-12" style="text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">
+                            ${post['Description']}
+                        </p>
+                        <div class="flex flex-wrap justify-center text-4xl text-gray-300 gap-x-12 gap-y-4">
+                            ${post['Location'] ? `<span><strong>Location:</strong> ${post['Location']}</span>` : ''}
+                            ${post['Applies To'] ? `<span><strong>Applies To:</strong> ${post['Applies To']}</span>` : ''}
+                            ${post['Posted by'] ? `<span><strong>Posted by:</strong> ${post['Posted by']}</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            feedTrack.innerHTML = itemsHtml;
+            startSlideshow(posts.length);
+        }
+
+        /**
+         * Displays an error message on the screen.
+         */
+        function displayError(message) {
+            feedContainer.innerHTML = `
+                <div class="w-full h-screen flex flex-col justify-center items-center text-center p-10 bg-red-800">
+                    <h1 class="text-6xl font-bold mb-4">Error</h1>
+                    <p class="text-4xl text-red-200">${message}</p>
+                </div>
+            `;
+        }
+
+
+        /**
+         * Manages the slideshow, fading between items.
+         */
+        function startSlideshow(postCount) {
+            const slides = document.querySelectorAll('.feed-item');
+            if (slides.length === 0) return;
+
+            // Clear any existing interval from a previous run
+            if (slideInterval) clearInterval(slideInterval); 
+
+            currentSlideIndex = 0;
+            slides[currentSlideIndex].classList.remove('opacity-0'); // Show the first slide
+
+            if (postCount <= 1) return; // Don't do anything else if there's only one slide
+
+            let slideIndex = 0; // Use a local index for the loop
+
+            slideInterval = setInterval(() => {
+                if (slideIndex < postCount - 1) {
+                    // We are not on the last slide, so transition to the next
+                    slides[slideIndex].classList.add('opacity-0'); // Fade out current
+                    slideIndex++;
+                    slides[slideIndex].classList.remove('opacity-0'); // Fade in next
+                } else {
+                    // This was the last slide, clear the interval and stop
+                    clearInterval(slideInterval);
+                    slideInterval = null;
+                    console.log('[NewsFeed] End of slideshow, stopping on last post.');
+                }
+            }, SECONDS_PER_ITEM * 1000);
+        }
+
+        /**
+         * Initializes Firebase and starts the config listener.
+         */
+        function initializeFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                configDocRef = doc(db, 'config', 'global');
+
+                // Listen for config changes
+                onSnapshot(configDocRef, (docSnap) => {
+                    let newDuration = 20; // default
+                    if (docSnap.exists()) {
+                        const config = docSnap.data();
+                        newDuration = config.newsFeed_secondsPerItem || 20;
+                    } else {
+                        console.warn("[NewsFeed] Global config doc not found. Using default slide duration.");
+                    }
+                    
+                    // If duration changed, update it and restart the feed
+                    if (newDuration > 0 && newDuration !== SECONDS_PER_ITEM) {
+                        console.log(`[NewsFeed] Setting slide duration to ${newDuration} seconds from Firebase.`);
+                        SECONDS_PER_ITEM = newDuration;
+                        
+                        // Re-calculate and report new total duration
+                        reportDurationToParent();
+                        
+                        // Restart the internal feed to apply new timing
+                        updateFeed(); 
+                    }
+                }, (error) => {
+                    console.error("[NewsFeed] Error listening to config, using default duration:", error);
+                });
+
+                return true;
+            } catch(e) {
+                console.error("[NewsFeed] Firebase init failed:", e);
+                displayError("Could not connect to configuration database.");
+                return false;
+            }
+        }
+ 
+        /**
+         * Checks if the required libraries (PapaParse, Day.js) are loaded.
+         */
+        function checkLibrariesAndRun() {
+            if (typeof Papa !== 'undefined' && typeof dayjs !== 'undefined') {
+                console.log('[NewsFeed] Libraries loaded, starting feed.');
+                
+                if (initializeFirebase()) {
+                    // Run the feed update immediately on load
+                    updateFeed();
+                    // Set an interval to refresh the data automatically
+                    setInterval(updateFeed, REFRESH_INTERVAL_MS);
+                }
+            
+            } else {
+                const undefinedLibs = [];
+                if (typeof Papa === 'undefined') undefinedLibs.push('Papa');
+                if (typeof dayjs === 'undefined') undefinedLibs.push('dayjs');
+                console.warn(`[NewsFeed] Libraries not ready (${undefinedLibs.join(', ')}), retrying in 100ms...`);
+                setTimeout(checkLibrariesAndRun, 100);
+            }
+        }
+
+        // Start the app
+        document.addEventListener('DOMContentLoaded', () => {
+            checkLibrariesAndRun();
+        });
+
+    </script>
+</body>
+</html>
+
+
