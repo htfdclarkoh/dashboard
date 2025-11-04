@@ -49,7 +49,7 @@
         <div class="flex justify-between items-center mb-6 flex-wrap">
             <div>
                 <!-- UPDATED TITLE -->
-                <h1 class="text-4xl font-black text-gray-800">New Dashboard Admin Console</h1>
+                <h1 class="text-4xl font-black text-gray-800">HTFD Dashboard Admin Console</h1>
                 <p id="user-email-display" class="text-sm text-gray-600 mt-1"></p>
             </div>
             <div class="flex gap-4 mt-4 md:mt-0">
@@ -83,8 +83,7 @@
                 <!-- *** NEW: News Feed Tab *** -->
                 <li><button data-tab="news" class="nav-tab py-2 px-4 font-medium">News Feed</button></li>
                 <li><button data-tab="nws" class="nav-tab py-2 px-4 font-medium">NWS/IPAWS Alerts</button></li>
-                <!-- *** NEW: Active911 Tab *** -->
-                <li><button data-tab="active911" class="nav-tab py-2 px-4 font-medium">Active911</button></li>
+                <!-- *** REMOVED: Active911 Tab *** -->
                 <li><button data-tab="slide-management" class="nav-tab py-2 px-4 font-medium">Slide Management</button></li>
             </ul>
         </nav>
@@ -224,50 +223,7 @@
                         </fieldset>
                     </div>
 
-                    <!-- NEW: Active911 Tab Panel -->
-                    <div id="tab-active911" class="tab-panel">
-                        <fieldset class="border-b border-gray-200 py-6">
-                            <legend class="text-lg font-medium text-gray-900">Active911 Alerts</legend>
-                            <p class="text-sm text-gray-600 mt-2">
-                                Polls Active911 for new alerts for a specific department.
-                            </p>
-                            <div class="form-grid mt-4">
-                                <div class="col-span-1 md:col-span-2">
-                                    <label for="active911_apiToken" class="block text-sm font-medium text-gray-700">API Token</label>
-                                    <input type="password" id="active911_apiToken" placeholder="Your Active911 API Token" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-black">
-                                </div>
-                                <div>
-                                    <label for="active911_departmentId" class="block text-sm font-medium text-gray-700">Department ID</label>
-                                    <input type="number" id="active911_departmentId" placeholder="1234" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-black">
-                                </div>
-                                <div>
-                                    <label for="active911_pollIntervalSeconds" class="block text-sm font-medium text-gray-700">Poll Interval (seconds)</label>
-                                    <input type="number" id="active911_pollIntervalSeconds" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-black">
-                                </div>
-                                <div>
-                                    <label for="active911_alertDurationSeconds" class="block text-sm font-medium text-gray-700">Alert Display (seconds)</label>
-                                    <input type="number" id="active911_alertDurationSeconds" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-black">
-                                </div>
-                                <!-- NEW: Alert Sound Selection -->
-                                <div>
-                                    <label for="active911_alertTone" class="block text-sm font-medium text-gray-700">Alert Sound</label>
-                                    <select id="active911_alertTone" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 text-black">
-                                        <option value="alarm">Alarm (alarm.mp3)</option>
-                                        <option value="default">Default (default.mp3)</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <!-- NEW: Test Button -->
-                            <div class="mt-6">
-                                <h3 class="text-md font-medium text-gray-900">Test Active911 Alert</h3>
-                                <p class="text-sm text-gray-600 mt-1">This will trigger the red Active911 alert overlay on all dashboards.</p>
-                                <button type="button" id="test-active911-alert-btn" class="mt-3 inline-flex justify-center rounded-lg border border-transparent bg-red-600 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-red-700">
-                                    Send Test Alert
-                                </button>
-                                <span id="test-active911-feedback" class="ml-4 text-gray-600"></span>
-                            </div>
-                        </fieldset>
-                    </div>
+                    <!-- *** REMOVED: Active911 Tab Panel *** -->
 
                     <!-- This save button applies to all config tabs -->
                     <div class="flex justify-end mt-6">
@@ -365,7 +321,7 @@
         let slidesCollection;
         let configDocRef;
         let manualAlertDocRef;
-        let testActive911DocRef;
+        // let testActive911DocRef; // *** REMOVED ***
         let forceReloadDocRef; // *** NEW ***
 
         // --- NEW DOM Elements ---
@@ -399,7 +355,7 @@
                 slidesCollection = collection(db, 'slides');
                 configDocRef = doc(db, 'config', 'global');
                 manualAlertDocRef = doc(db, 'alerts', 'manual_alert');
-                testActive911DocRef = doc(db, 'alerts', 'test_active911');
+                // testActive911DocRef = doc(db, 'alerts', 'test_active911'); // *** REMOVED ***
                 forceReloadDocRef = doc(db, 'alerts', 'force_reload'); // *** NEW ***
 
                 return true;
@@ -461,11 +417,7 @@
                     document.getElementById('nwsAlertZone').value = config.nwsAlertZone || 'OHZ054';
                     document.getElementById('nwsAlertRefreshSeconds').value = config.nwsAlertRefreshSeconds || 300;
 
-                    document.getElementById('active911_apiToken').value = config.active911_apiToken || '';
-                    document.getElementById('active911_departmentId').value = config.active911_departmentId || '';
-                    document.getElementById('active911_pollIntervalSeconds').value = config.active911_pollIntervalSeconds || 60;
-                    document.getElementById('active911_alertDurationSeconds').value = config.active911_alertDurationSeconds || 60;
-                    document.getElementById('active911_alertTone').value = config.active911_alertTone || 'alarm';
+                    // *** REMOVED: Active911 config loading ***
 
                     document.getElementById('logo_url').value = config.logoUrl || '';
                     const preview = document.getElementById('logo-preview');
@@ -487,9 +439,7 @@
                     document.getElementById('newsFeed_secondsPerItem').value = 20;
                     document.getElementById('nwsAlertZone').value = 'OHZ054';
                     document.getElementById('nwsAlertRefreshSeconds').value = 300;
-                    document.getElementById('active911_pollIntervalSeconds').value = 60;
-                    document.getElementById('active911_alertDurationSeconds').value = 60;
-                    document.getElementById('active911_alertTone').value = 'alarm';
+                    // *** REMOVED: Active911 config defaults ***
                     document.getElementById('logo_preview').src = 'https://placehold.co/200x100/f1f5f9/94a3b8?text=No+Logo+Set';
                 }
             } catch (error) {
@@ -593,11 +543,7 @@
                 nwsAlertZone: document.getElementById('nwsAlertZone').value,
                 nwsAlertRefreshSeconds: parseInt(document.getElementById('nwsAlertRefreshSeconds').value, 10),
                 
-                active911_apiToken: document.getElementById('active911_apiToken').value,
-                active911_departmentId: parseInt(document.getElementById('active911_departmentId').value, 10) || null,
-                active911_pollIntervalSeconds: parseInt(document.getElementById('active911_pollIntervalSeconds').value, 10),
-                active911_alertDurationSeconds: parseInt(document.getElementById('active911_alertDurationSeconds').value, 10),
-                active911_alertTone: document.getElementById('active911_alertTone').value,
+                // *** REMOVED: Active911 config saving ***
 
                 logoUrl: document.getElementById('logo_url').value,
             };
@@ -878,28 +824,7 @@
                 }, 2000);
             });
 
-            const testActive911Btn = document.getElementById('test-active911-alert-btn');
-            const testActive911Feedback = document.getElementById('test-active911-feedback');
-
-            testActive911Btn.addEventListener('click', async () => {
-                testActive911Btn.disabled = true;
-                testActive911Feedback.textContent = 'Sending...';
-                hideGlobalError(); // NEW
-                try {
-                    await setDoc(testActive911DocRef, {
-                        timestamp: new Date().toISOString()
-                    });
-                    testActive911Feedback.textContent = 'Test alert sent!';
-                } catch (e) {
-                    // console.error("Error sending test Active911 alert:", e); // OLD
-                    showGlobalError(e); // NEW
-                    testActive911Feedback.textContent = 'Error!';
-                }
-                setTimeout(() => {
-                    testActive911Btn.disabled = false;
-                    testActive911Feedback.textContent = '';
-                }, 2000);
-            });
+            // *** REMOVED: Active911 test button logic ***
         }
 
         // ------------------------------
