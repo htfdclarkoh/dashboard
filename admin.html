@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- UPDATED TITLE -->
     <title>Dashboard Admin Console</title>
+    <link rel="icon" type="image/png" href="https://i.ibb.co/BKr2c8Sx/icon.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
     <style>
@@ -299,18 +300,17 @@
         // CONFIGURATION
         // ------------------------------
         
-        // --- !!! NEW FIREBASE CONFIG !!! ---
-        // This is the new Firebase project configuration you provided.
+        // --- !!! USER-REQUESTED FIREBASE CONFIG UPDATE !!! ---
         const firebaseConfig = {
-          apiKey: "AIzaSyAbtnkSLRaRbeQTF-vUYq7m57wtgb8F0R8",
-          authDomain: "dashboard-a97a1.firebaseapp.com",
-          projectId: "dashboard-a97a1",
-          storageBucket: "dashboard-a97a1.firebasestorage.app",
-          messagingSenderId: "1091756380380",
-          appId: "1:1091756380380:web:8fd204bbc630e9a03b6419",
-          measurementId: "G-PZM4NMQ280"
+          apiKey: "AIzaSyCqqW_fryqigzg7zDWgEsuADhBkPYcHQMo",
+          authDomain: "db2-2f64c.firebaseapp.com",
+          projectId: "db2-2f64c",
+          storageBucket: "db2-2f64c.firebasestorage.app",
+          messagingSenderId: "234811583682",
+          appId: "1:234811583682:web:aa2bd4e29296207c0d5f5b",
+          measurementId: "G-38MS80C490"
         };
-        // --- !!! END NEW FIREBASE CONFIG !!! ---
+        // --- !!! END FIREBASE CONFIG UPDATE ---
 
 
         // ------------------------------
@@ -549,7 +549,10 @@
             };
 
             try {
-                await setDoc(configDocRef, configData);
+                // *** FIXED: Used { merge: true } so we don't overwrite 'lastUpdated' ***
+                // This prevents the dashboard from thinking a refresh was requested.
+                await setDoc(configDocRef, configData, { merge: true });
+                
                 const feedback = document.getElementById('save-feedback');
                 feedback.classList.remove('hidden');
                 feedback.classList.add('flex');

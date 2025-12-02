@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- UPDATED TITLE -->
   <title>HTFD Dashboard</title>
-  <link rel="icon" type="image/x-icon" href="favicon6.ico">
-  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="https://i.ibb.co/zT7ffmDk/anotherlogo2.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="https://i.ibb.co/zT7ffmDk/anotherlogo2.png">
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Google Fonts -->
@@ -64,13 +64,35 @@
         /* Move slide 2rem up */
         transform: translateY(-2rem); 
     }
+
+    /*
+     * *** UPDATED: Ticker Animation ***
+     * 0% uses 100vw to start fully off-screen right (viewport width)
+     * 100% uses -100% to move fully off-screen left (element width)
+     */
+    @keyframes marquee {
+      0% { transform: translateX(100vw); }
+      100% { transform: translateX(-100%); }
+    }
+    
+    .animate-marquee {
+      animation: marquee 20s linear infinite;
+    }
+
+    /* Class to hide ticker initially but allow it to take up space when shown */
+    .ticker-hidden {
+        display: none;
+    }
+    .ticker-visible {
+        display: flex;
+    }
   </style>
 </head>
 <!-- UPDATED: Changed w-screen to w-full to prevent potential overflow -->
 <body class="bg-gray-900 text-white flex flex-col h-screen w-full overflow-hidden">
 
   <!-- Main content area (sidebar + slides) -->
-  <div class="flex-grow flex flex-col md:flex-row min-h-0">
+  <div class="flex-grow flex flex-col md:flex-row min-h-0 transition-all duration-500 ease-in-out" id="main-content-area">
     <!-- Toolbar / Sidebar -->
     <aside class="w-full md:w-64 bg-gray-800 text-white flex md:flex-col justify-around md:justify-between items-center p-4 md:p-5 flex-shrink-0 z-20 shadow-lg">
       <div class="flex flex-col items-center text-center">
@@ -88,6 +110,12 @@
           <p id="weather-condition" class="text-2xl text-gray-300 mt-2">Loading...</p>
           <p id="weather-location" class="text-xl font-bold mt-2">...</p>
           <p id="weather-high-low" class="text-md text-gray-400">H: --° L: --°</p>
+      </div>
+      
+      <!-- *** NEW: Sidebar Alert Display *** -->
+      <!-- This container sits between weather and clock. Hidden by default. -->
+      <div id="sidebar-alert-display" class="w-full hidden px-2 my-2 transition-all duration-300">
+         <!-- Content injected by JS when active -->
       </div>
       
       <!-- Clock Container -->
@@ -114,11 +142,14 @@
   
   <!-- *** REMOVED: Active911 Alert Overlay *** -->
 
-  <!-- Ticker Iframe -->
-  <footer id="ticker-footer" class="fixed bottom-0 left-0 w-full h-20 z-50 hidden">
-    <iframe src="ticker.html" class="w-full h-full border-none"></iframe>
-  </footer>
-
+  <!-- *** NEW: Native Ticker Bar *** -->
+  <!-- This is now a flex child of the body, not a fixed footer, so it pushes content up -->
+  <div id="ticker-bar" class="w-full h-20 bg-red-900 border-t-4 border-red-700 flex-shrink-0 z-50 hidden items-center overflow-hidden shadow-2xl relative">
+      <!-- The scrolling text container -->
+      <div id="ticker-content" class="whitespace-nowrap text-4xl font-bold text-white uppercase tracking-wider px-4">
+          <!-- Content injected via JS -->
+      </div>
+  </div>
 
   <audio id="alertSound"></audio>
 
@@ -134,18 +165,17 @@
         // Configuration
         // ------------------------------
         
-        // --- !!! NEW FIREBASE CONFIG !!! ---
-        // This is the new Firebase project configuration you provided.
+        // --- !!! USER-REQUESTED FIREBASE CONFIG UPDATE !!! ---
         const firebaseConfig = {
-          apiKey: "AIzaSyAbtnkSLRaRbeQTF-vUYq7m57wtgb8F0R8",
-          authDomain: "dashboard-a97a1.firebaseapp.com",
-          projectId: "dashboard-a97a1",
-          storageBucket: "dashboard-a97a1.firebasestorage.app",
-          messagingSenderId: "1091756380380",
-          appId: "1:1091756380380:web:8fd204bbc630e9a03b6419",
-          measurementId: "G-PZM4NMQ280"
+          apiKey: "AIzaSyCqqW_fryqigzg7zDWgEsuADhBkPYcHQMo",
+          authDomain: "db2-2f64c.firebaseapp.com",
+          projectId: "db2-2f64c",
+          storageBucket: "db2-2f64c.firebasestorage.app",
+          messagingSenderId: "234811583682",
+          appId: "1:234811583682:web:aa2bd4e29296207c0d5f5b",
+          measurementId: "G-38MS80C490"
         };
-        // --- !!! END NEW FIREBASE CONFIG ---
+        // --- !!! END FIREBASE CONFIG UPDATE ---
 
 
         // NEW: Global state variables
@@ -159,6 +189,7 @@
         let weatherInterval = null;
         let slidesRefreshInterval = null;
         let slideRotationTimer = null;
+        let tickerInterval = null; // Timer to check ticker dates
 
         // Slide rotation state
         const slideDivs = document.querySelectorAll('.slide');
@@ -195,24 +226,74 @@
 
 
         // ------------------------------
-        // Ticker Communication
+        // Ticker Logic (NEW)
         // ------------------------------
-        window.addEventListener('message', (event) => {
-            const tickerFooter = document.getElementById('ticker-footer');
-            const clockContainer = document.getElementById('clock-container');
+        function initializeTicker() {
+            const tickerRef = collection(db, 'ticker');
             
-            if (event.data && typeof event.data.tickerActive !== 'undefined') {
-                if (event.data.tickerActive) {
-                    tickerFooter.classList.remove('hidden');
-                    clockContainer.classList.add('md:mb-20');
-                } else {
-                    tickerFooter.classList.add('hidden');
-                    clockContainer.classList.remove('md:mb-20');
-                }
-            }
+            onSnapshot(tickerRef, (snapshot) => {
+                const allMessages = [];
+                snapshot.forEach(doc => {
+                    allMessages.push(doc.data());
+                });
+                
+                // Function to check dates and update UI
+                const checkTicker = () => {
+                    if (typeof dayjs === 'undefined') return;
+                    const now = dayjs();
+                    
+                    // Filter valid messages
+                    const activeMessages = allMessages.filter(msg => {
+                        const start = dayjs(msg.startDateTime);
+                        const end = dayjs(msg.endDateTime);
+                        return start.isValid() && end.isValid() && now.isAfter(start) && now.isBefore(end);
+                    }).map(msg => msg.message);
 
-            // *** Listener for 'newsFeedDuration' is no longer needed ***
-        });
+                    const tickerBar = document.getElementById('ticker-bar');
+                    const tickerContent = document.getElementById('ticker-content');
+                    
+                    if (activeMessages.length > 0) {
+                        // Join messages with a spacer
+                        const fullText = activeMessages.join('   +++   ');
+                        tickerContent.textContent = fullText;
+                        
+                        // Add animation class only if not present
+                        if (!tickerContent.classList.contains('animate-marquee')) {
+                             tickerContent.classList.add('animate-marquee');
+                        }
+
+                        // *** UPDATED DURATION CALCULATION ***
+                        // Calculate duration for consistent speed (distance / speed)
+                        // Speed target: ~150 pixels per second
+                        // Total distance = Viewport Width (entry) + Text Width (exit)
+                        // We estimate text width at roughly 25px per char for the large font
+                        const estimatedTextWidth = fullText.length * 25; 
+                        const totalDistance = window.innerWidth + estimatedTextWidth;
+                        const speedPixelsPerSecond = 150; 
+                        const duration = totalDistance / speedPixelsPerSecond;
+
+                        tickerContent.style.animationDuration = `${duration}s`;
+
+                        // Show bar
+                        tickerBar.classList.remove('hidden');
+                        tickerBar.classList.add('flex');
+                    } else {
+                        // Hide bar
+                        tickerBar.classList.add('hidden');
+                        tickerBar.classList.remove('flex');
+                        tickerContent.classList.remove('animate-marquee');
+                    }
+                };
+
+                // Check immediately
+                checkTicker();
+
+                // Clear old interval
+                if (tickerInterval) clearInterval(tickerInterval);
+                // Check every minute to start/stop messages based on time
+                tickerInterval = setInterval(checkTicker, 60000); 
+            });
+        }
 
         // ------------------------------
         // Audio Context and Sound Playback
@@ -318,39 +399,24 @@
                 return [];
             }
             const now = dayjs();
-            console.log(`[NewsFeed] Filtering ${posts.length} total posts at time: ${now.format()}`);
             
             return posts.filter((post, index) => {
                 const title = post['Title *'];
                 const postDateStr = post['Date/Time to Post'];
                 const removeDateStr = post['Date to Remove'];
 
-                if (!title) {
-                    // console.log(`[NewsFeed] Post ${index} REJECTED: Missing 'Title *'.`); // Too noisy
-                    return false;
-                }
-                if (!postDateStr) {
-                    console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: Missing 'Date/Time to Post'.`);
-                    return false;
-                }
+                if (!title) return false;
+                if (!postDateStr) return false;
 
                 const postDate = dayjs(postDateStr);
-                if (!postDate.isValid()) {
-                    console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: 'Date/Time to Post' is invalid ("${postDateStr}"). Check format.`);
-                    return false;
-                }
-                if (!now.isAfter(postDate)) {
-                    // console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: Not time to post yet (Post: ${postDate.format()} | Now: ${now.format()}).`); // Too noisy
-                    return false;
-                }
+                if (!postDate.isValid()) return false;
+                
+                if (!now.isAfter(postDate)) return false;
+                
                 if (removeDateStr) {
                     const removeDate = dayjs(removeDateStr);
-                    if (removeDate.isValid() && now.isAfter(removeDate)) {
-                        console.log(`[NewsFeed] Post ${index} ("${title}") REJECTED: Past remove date (Remove: ${removeDate.format()} | Now: ${now.format()}).`);
-                        return false;
-                    }
+                    if (removeDate.isValid() && now.isAfter(removeDate)) return false;
                 }
-                // console.log(`[NewsFeed] Post ${index} ("${title}") APPROVED.`); // Too noisy
                 return true;
             });
         }
@@ -368,7 +434,6 @@
             const feedTrack = feedContainer.querySelector('#feed-track');
             if (!feedTrack) {
                  console.error("[NewsFeed] renderFeed container is missing #feed-track.");
-                 feedContainer.innerHTML = `<div class="w-full h-full flex items-center justify-center bg-red-800 text-white p-4">News Feed Error: Missing #feed-track</div>`;
                  return;
             }
             feedTrack.innerHTML = ''; // Clear previous content
@@ -731,9 +796,47 @@
               return;
           }
           try {
-            const response = await fetch(`https://api.weather.gov/alerts/active/zone/${dashboardConfig.nwsAlertZone}`);
+            // *** FIXED: Added headers required by NWS API to prevent 403 Forbidden errors ***
+            const response = await fetch(`https://api.weather.gov/alerts/active/zone/${dashboardConfig.nwsAlertZone}`, {
+                headers: {
+                    'Accept': 'application/geo+json',
+                    'User-Agent': '(PTFD Dashboard)' // NWS requires a User-Agent
+                }
+            });
+
             if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
             const data = await response.json();
+            
+            // ---------------------------------------------------------
+            // *** NEW: Sidebar Persistent Alert Logic ***
+            // ---------------------------------------------------------
+            const sidebarAlert = document.getElementById('sidebar-alert-display');
+            if (sidebarAlert) {
+                if (data.features && data.features.length > 0) {
+                    // 1. Extract unique event names
+                    const events = [...new Set(data.features.map(f => f.properties.event))];
+                    // 2. Format them for display
+                    const alertHtml = events.join('<br>');
+                    
+                    // 3. Update the Sidebar HTML
+                    sidebarAlert.innerHTML = `
+                        <div class="bg-red-600 text-white rounded-lg p-3 animate-pulse border-2 border-red-400 shadow-lg text-center">
+                            <div class="flex justify-center mb-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-yellow-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                            </div>
+                            <p class="text-sm font-black uppercase tracking-wide leading-tight">${alertHtml}</p>
+                        </div>
+                    `;
+                    sidebarAlert.classList.remove('hidden');
+                } else {
+                    sidebarAlert.classList.add('hidden');
+                    sidebarAlert.innerHTML = '';
+                }
+            }
+            // ---------------------------------------------------------
+
             const newAlertMessages = [];
             if (data.features && data.features.length > 0) {
               for (const feature of data.features) {
@@ -855,8 +958,6 @@
                     }
                     // --- End of Logo Update ---
 
-                    // *** REMOVED: Old news feed duration logic ***
-
                     // Clear old intervals before setting new ones
                     if (ipawsInterval) clearInterval(ipawsInterval);
                     if (weatherInterval) clearInterval(weatherInterval);
@@ -872,6 +973,9 @@
                         initializeAlertListener(); 
                         initializeSlideListener(); // This will call startRotation() on its own
                         initializeForceReloadListener(); // *** NEW ***
+                        
+                        // *** NEW: Start Ticker ***
+                        initializeTicker(); 
 
                         // *** NEW: Start news feed fetching ***
                         fetchNewsFeed(); // Initial fetch
@@ -1020,14 +1124,9 @@
         function initializeFirebase() {
             try {
                 // *** UPDATED: Check the new firebaseConfig object ***
-                if (!firebaseConfig || firebaseConfig.apiKey.startsWith("PASTE_") || firebaseConfig.apiKey === "AIzaSyCew0RUOwuFT-rplkh6h80UBnKPOfrn7qo") {
-                    // Check for default placeholder or the *old* key
-                    if(firebaseConfig.apiKey === "AIzaSyCew0RUOwuFT-rplkh6h80UBnKPOfrn7qo") {
-                         console.warn("This appears to be the old dashboard config. Make sure this is intended.");
-                    } else {
-                         console.warn("Firebase is not configured. Remote features are disabled.");
-                         return;
-                    }
+                if (!firebaseConfig || firebaseConfig.apiKey.startsWith("PASTE_")) {
+                     console.warn("Firebase is not configured. Remote features are disabled.");
+                     return;
                 }
                 
                 const app = initializeApp(firebaseConfig);
