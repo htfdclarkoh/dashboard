@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Force Reload Controller</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- Main Controller Wrapper -->
+    <div id="app-wrapper" class="w-full max-w-lg bg-white shadow-xl rounded-lg p-8 text-center">
+        <h1 class="text-3xl font-black text-gray-800 mb-2">Emergency Controls</h1>
+        <p class="text-sm text-gray-500 mb-8">Public Access Mode</p>
+
+        <!-- THE FORCE RELOAD BUTTON -->
+        <div class="py-8 border-t border-b border-gray-100 flex justify-center">
+            <button id="force-reload-btn" class="w-64 h-64 inline-flex flex-col justify-center items-center rounded-full border border-transparent bg-red-600 text-2xl font-bold text-white shadow-[0_10px_20px_rgba(220,38,38,0.4)] hover:bg-red-700 focus:outline-none focus:ring-4 focus:ring-red-500 focus:ring-offset-2 transition-all transform hover:scale-105 active:scale-95 leading-tight" title="Forces all dashboards to reload and clear their cache.">
+                <span>FORCE RELOAD</span>
+                <span class="text-lg font-semibold mt-1">ALL DASHBOARDS</span>
+            </button>
+        </div>
+            <p class="text-xs text-gray-400 mt-8">
+                Warning: This clears cache and reloads all active displays immediately.
+            </p>
+
+        <!-- Status/Error Display -->
+        <div id="status-panel" class="hidden mt-6 p-4 rounded-md text-left">
+            <p id="status-message" class="font-medium"></p>
+        </div>
+    </div>
+
+    <!-- Firebase Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.7/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.6.7/firebase-auth.js";
+        import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/9.6.7/firebase-firestore.js";
+
+        // Configuration
+        const firebaseConfig = {
+          apiKey: "AIzaSyCqqW_fryqigzg7zDWgEsuADhBkPYcHQMo",
+          authDomain: "db2-2f64c.firebaseapp.com",
+          projectId: "db2-2f64c",
+          storageBucket: "db2-2f64c.firebasestorage.app",
+          messagingSenderId: "234811583682",
+          appId: "1:234811583682:web:aa2bd4e29296207c0d5f5b",
+          measurementId: "G-38MS80C490"
+        };
+
+        // Initialize
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Reference to the specific alert document
+        const forceReloadDocRef = doc(db, 'alerts', 'force_reload');
+
+        // DOM Elements
+        const reloadBtn = document.getElementById('force-reload-btn');
+        const statusPanel = document.getElementById('status-panel');
+        const statusMessage = document.getElementById('status-message');
+
+        // Automatic Anonymous Login
+        signInAnonymously(auth).catch((error) => {
+            console.error("Anonymous auth failed:", error);
+            showStatus("Failed to connect to system. Check console.", "error");
+            reloadBtn.disabled = true;
+            reloadBtn.classList.add('bg-gray-400', 'cursor-not-allowed');
+            reloadBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+        });
+
+        // UI Helpers
+        function showStatus(msg, type = 'info') {
+            statusPanel.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700');
+            statusMessage.innerHTML = msg;
+            
+            if (type === 'error') {
+                statusPanel.classList.add('bg-red-100', 'text-red-700');
+            } else if (type === 'success') {
+                statusPanel.classList.add('bg-green-100', 'text-green-700');
+            }
+            statusPanel.classList.remove('hidden');
+        }
+
+        // Logic: Force Reload
+        reloadBtn.addEventListener('click', async () => {
+            // Ensure we have a user before writing
+            if (!auth.currentUser) {
+                showStatus("System connecting... please wait.", "error");
+                return;
+            }
+
+            if (!confirm('CONFIRM: Force all screens to reload?\n\nThis will clear cache and refresh every connected dashboard immediately.')) {
+                return;
+            }
+
+            // UI State: Loading
+            reloadBtn.disabled = true;
+            const originalHTML = reloadBtn.innerHTML; // Store original HTML
+            reloadBtn.innerHTML = '<span>Sending Signal...</span>';
+            reloadBtn.classList.remove('bg-red-600', 'hover:bg-red-700', 'hover:scale-105', 'active:scale-95');
+            reloadBtn.classList.add('bg-gray-400', 'cursor-not-allowed');
+            statusPanel.classList.add('hidden');
+
+            try {
+                // Write to Firestore
+                await setDoc(forceReloadDocRef, { 
+                    timestamp: new Date().toISOString(),
+                    triggeredBy: 'Anonymous User (' + auth.currentUser.uid + ')'
+                });
+
+                // UI State: Success
+                reloadBtn.innerHTML = '<span>Signal Sent!</span>';
+                reloadBtn.classList.remove('bg-gray-400');
+                reloadBtn.classList.add('bg-green-600');
+                showStatus('<strong>Success:</strong> Reload signal sent to all dashboards.', 'success');
+
+                // Reset Button after delay
+                setTimeout(() => {
+                    reloadBtn.innerHTML = originalHTML; // Restore original HTML
+                    reloadBtn.classList.remove('bg-green-600', 'bg-gray-400', 'cursor-not-allowed');
+                    reloadBtn.classList.add('bg-red-600', 'hover:bg-red-700', 'hover:scale-105', 'active:scale-95');
+                    reloadBtn.disabled = false;
+                }, 3000);
+
+            } catch (error) {
+                console.error(error);
+                // UI State: Error
+                reloadBtn.innerHTML = '<span>Failed</span>';
+                reloadBtn.classList.remove('bg-gray-400');
+                reloadBtn.classList.add('bg-red-800');
+                
+                let errorMsg = error.message;
+                if (error.code === 'permission-denied') {
+                    errorMsg = "Permission Denied. You do not have permission to perform this action.";
+                }
+                showStatus(errorMsg, 'error');
+
+                // Reset Button after delay
+                setTimeout(() => {
+                    reloadBtn.innerHTML = originalHTML; // Restore original HTML
+                    reloadBtn.classList.remove('bg-red-800');
+                    reloadBtn.classList.add('bg-red-600', 'hover:bg-red-700', 'hover:scale-105', 'active:scale-95');
+                    reloadBtn.disabled = false;
+                }, 3000);
+            }
+        });
+    </script>
+</body>
+</html>
