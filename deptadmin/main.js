@@ -182,6 +182,7 @@ onAuthStateChanged(auth, (user) => {
         setupMaintenanceLogic();
         setupTickerLogic();
         fetchPosts();
+        setupForceReloadLogic(); // NEW: Force Reload logic
         
         // Start Layout Listener
         setupRealtimeLayout();
@@ -832,6 +833,42 @@ maintForm.onsubmit = async (e) => {
     }, {merge: true});
     maintModal.style.display = 'none';
 };
+
+// --- NEW: FORCE RELOAD LOGIC ---
+function setupForceReloadLogic() {
+    const reloadBtn = document.getElementById('force-reload-btn');
+    if(!reloadBtn) return;
+
+    reloadBtn.addEventListener('click', async () => {
+        if(!confirm('This will force ALL dashboards to reload, clearing their cache. This can be disruptive. Are you sure?')) return;
+
+        const originalContent = reloadBtn.innerHTML;
+        reloadBtn.disabled = true;
+        reloadBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Sending...';
+
+        try {
+            await setDoc(doc(db, 'alerts', 'force_reload'), {
+                timestamp: new Date().toISOString(),
+                triggeredBy: auth.currentUser?.email || 'unknown'
+            });
+            
+            reloadBtn.innerHTML = '<i class="fa-solid fa-check mr-2"></i> Signal Sent!';
+            reloadBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+            reloadBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+
+            setTimeout(() => {
+                reloadBtn.innerHTML = originalContent;
+                reloadBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+                reloadBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+                reloadBtn.disabled = false;
+            }, 3000);
+        } catch(e) {
+            alert('Error: ' + e.message);
+            reloadBtn.disabled = false;
+            reloadBtn.innerHTML = originalContent;
+        }
+    });
+}
 
 // --- UTILS ---
 function convertISOToDate(iso) {
