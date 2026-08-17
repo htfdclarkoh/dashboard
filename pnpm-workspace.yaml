@@ -1,0 +1,18 @@
+ignoredOptionalDependencies:
+  - dmg-license
+
+nodeLinker: hoisted
+
+supportedArchitectures:
+  os:
+    - win32
+  cpu:
+    - x64
+
+allowBuilds:
+  '@firebase/util': true
+  '@parcel/watcher': true
+  core-js: true
+  electron: true
+  esbuild: true
+  protobufjs: true

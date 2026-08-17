@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    match /config/{document} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /slides/{document} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /ticker/{document} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /alerts/{document} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /layout_settings/{document} {
+      allow read, write: if isAdmin();
+    }
+
+    match /alertAcks/{document} {
+      allow create: if request.resource.data.keys().hasOnly(['eventKey', 'deviceId', 'acknowledgedAt'])
+        && request.resource.data.eventKey is string
+        && request.resource.data.eventKey.size() <= 256
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.size() <= 128;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /unitStatus/{document} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+    match /dailyTasks/{document} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+    match /addressNotes/{document} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+    match /maintenance/{document} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
