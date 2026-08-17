@@ -19,6 +19,7 @@ import {
     orderBy,
     serverTimestamp,
     getDoc,
+    getDocs,
     updateDoc,
     deleteField
 } from "./vendor/firebase.js";
@@ -39,16 +40,19 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const NEWS_COLLECTION = 'news';
 
-async function callNewsService(payload) {
-    const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-    const response = await fetch(MASTER_WEB_APP_URL, {
-        method: 'POST',
-        body: JSON.stringify({ ...payload, idToken }),
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-    });
-    if (!response.ok) throw new Error(`News service returned ${response.status}`);
-    return response.json();
+function newsPostFromForm(formData) {
+    const value = name => String(formData.get(name) || '').trim();
+    return {
+        title: value('Title'),
+        description: value('Description'),
+        location: value('Location'),
+        appliesTo: value('Applies To') || 'ALL',
+        postedBy: value('Posted by'),
+        postDate: value('Date/Time to Post'),
+        removeDate: value('Date to Remove')
+    };
 }
 
 let undoTimer = null;
@@ -371,35 +375,41 @@ function setupRealtimeLayout() {
 
 // --- 3. MODULE LOGIC ---
 
-// --- GOOGLE SHEETS NEWS FEED ---
-const MASTER_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwDFsKgHiCD4dEK6Fcou2tWferXLLv6t23hIv-VF5sFOXKVUrRFVuyODzKiB4zshJX4/exec';
+// --- FIRESTORE NEWS FEED ---
 
 document.addEventListener('DOMContentLoaded', () => {
     // News Feed Form
     const newsForm = document.querySelector('#view-news #data-form');
     if(newsForm) {
-        newsForm.addEventListener('submit', (e) => {
+        const postDateInput = newsForm.querySelector('#post-date');
+        if (postDateInput && !postDateInput.value) {
+            postDateInput.value = convertISOToDateTimeLocal(new Date().toISOString());
+        }
+
+        newsForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const btn = newsForm.querySelector('button[type="submit"]');
             const txt = btn.querySelector('span');
             const ldr = btn.querySelector('div');
             
             setLoading(true, btn, txt, ldr);
-            
-            const formData = new FormData(newsForm);
-            const dataObject = Object.fromEntries(formData.entries());
-            dataObject.action = 'addPost';
 
-            callNewsService(dataObject)
-            .then(data => {
-                if(data.status === 'success') {
-                    showMessage(document.getElementById('message-box-news'), 'Post published!', 'success');
-                    newsForm.reset();
-                    fetchPosts();
-                } else throw new Error(data.message);
-            })
-            .catch(err => showMessage(document.getElementById('message-box-news'), err.message, 'error'))
-            .finally(() => setLoading(false, btn, txt, ldr));
+            try {
+                const post = newsPostFromForm(new FormData(newsForm));
+                await addDoc(collection(db, NEWS_COLLECTION), {
+                    ...post,
+                    createdAt: serverTimestamp(),
+                    createdBy: auth.currentUser?.uid || ''
+                });
+                showMessage(document.getElementById('message-box-news'), 'Post published!', 'success');
+                newsForm.reset();
+                postDateInput.value = convertISOToDateTimeLocal(new Date().toISOString());
+                await fetchPosts();
+            } catch (err) {
+                showMessage(document.getElementById('message-box-news'), err.message, 'error');
+            } finally {
+                setLoading(false, btn, txt, ldr);
+            }
         });
     }
 
@@ -434,12 +444,15 @@ async function fetchPosts() {
     container.innerHTML = '';
     
     try {
-        const result = await callNewsService({ action: 'getPosts' });
-        
-        if (result.status === 'success' && result.data.length > 0) {
+        const snapshot = await getDocs(collection(db, NEWS_COLLECTION));
+        const allPosts = snapshot.docs
+            .map(documentSnapshot => ({ rowId: documentSnapshot.id, ...documentSnapshot.data() }))
+            .sort((a, b) => new Date(b.postDate).valueOf() - new Date(a.postDate).valueOf());
+
+        if (allPosts.length > 0) {
             msgArea.classList.add('hidden');
             const selectedStatus = document.getElementById('post-status-filter')?.value || 'active';
-            const posts = result.data.filter(post => selectedStatus === 'all' || getPostStatus(post) === selectedStatus);
+            const posts = allPosts.filter(post => selectedStatus === 'all' || getPostStatus(post) === selectedStatus);
             posts.forEach(post => {
                 const status = getPostStatus(post);
                 const statusClass = status === 'active' ? 'bg-green-100 text-green-700' : status === 'upcoming' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600';
@@ -464,8 +477,8 @@ async function fetchPosts() {
                     <p class="text-sm text-gray-700 mt-3 whitespace-pre-wrap">${escapeHtml(post.description)}</p>
                     <div class="mt-4 pt-3 border-t border-gray-50 flex flex-wrap gap-4 text-xs text-gray-400">
                         <span><i class="fa-solid fa-location-dot mr-1"></i> ${escapeHtml(post.location)}</span>
-                        <span><i class="fa-regular fa-clock mr-1"></i> Post: ${formatSheetDate(post.postDate)}</span>
-                        ${post.removeDate ? `<span><i class="fa-solid fa-calendar-xmark mr-1"></i> Ends: ${formatSheetDate(post.removeDate, false)}</span>` : ''}
+                        <span><i class="fa-regular fa-clock mr-1"></i> Post: ${formatNewsDate(post.postDate)}</span>
+                        ${post.removeDate ? `<span><i class="fa-solid fa-calendar-xmark mr-1"></i> Ends: ${formatNewsDate(post.removeDate, false)}</span>` : ''}
                     </div>
                 `;
                 
@@ -484,10 +497,14 @@ async function fetchPosts() {
             }
             enhanceAccessibility();
         } else {
-            msgArea.textContent = 'No active posts found.';
+            msgArea.textContent = 'No posts found.';
             msgArea.classList.remove('hidden');
         }
-    } catch(e) { console.error(e); }
+    } catch(e) {
+        console.error(e);
+        msgArea.textContent = `Unable to load posts: ${e.message}`;
+        msgArea.classList.remove('hidden');
+    }
     finally { btnIcon.classList.remove('fa-spin'); }
 }
 
@@ -495,8 +512,8 @@ async function handleDeletePost(rowId, btn) {
     if(!confirm('Are you sure you want to delete this post?')) return;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     try {
-        await callNewsService({ action: 'deletePost', rowId });
-        fetchPosts();
+        await deleteDoc(doc(db, NEWS_COLLECTION, rowId));
+        await fetchPosts();
     } catch(e) { alert(e.message); btn.innerHTML = '<i class="fa-solid fa-trash"></i>'; }
 }
 
@@ -532,9 +549,13 @@ editForm.addEventListener('submit', async (e) => {
     const data = Object.fromEntries(formData.entries());
 
     try {
-        await callNewsService({ action: 'updatePost', rowId: data.rowId, data });
+        await updateDoc(doc(db, NEWS_COLLECTION, data.rowId), {
+            ...newsPostFromForm(formData),
+            updatedAt: serverTimestamp(),
+            updatedBy: auth.currentUser?.uid || ''
+        });
         editModal.style.display = 'none';
-        fetchPosts();
+        await fetchPosts();
     } catch(e) { alert(e.message); }
     finally { btn.innerText = originalText; btn.disabled = false; }
 });
@@ -1092,7 +1113,7 @@ function convertISOToDateTimeLocal(iso) {
     d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
     return d.toISOString().slice(0, 16);
 }
-function formatSheetDate(iso, time=true) {
+function formatNewsDate(iso, time=true) {
     if(!iso) return 'N/A';
     const d = new Date(iso);
     const opt = { year:'numeric', month:'numeric', day:'numeric' };
