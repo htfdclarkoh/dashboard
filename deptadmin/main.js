@@ -1,11 +1,12 @@
 // --- 1. Firebase Auth and Initialization ---
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-app.js";
+import { initializeApp } from "./vendor/firebase.js";
 import { 
     getAuth, 
+    getIdTokenResult,
     signInWithEmailAndPassword, 
     onAuthStateChanged, 
     signOut 
-} from "https://www.gstatic.com/firebasejs/9.15.0/firebase-auth.js";
+} from "./vendor/firebase.js";
 import { 
     getFirestore, 
     collection, 
@@ -16,8 +17,12 @@ import {
     onSnapshot, 
     query, 
     orderBy,
-    serverTimestamp 
-} from "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js";
+    serverTimestamp,
+    getDoc,
+    updateDoc,
+    deleteField
+} from "./vendor/firebase.js";
+import { escapeHtml, getPostStatus, isContentExpired } from "../shared/dashboard-utils.mjs";
 
 // Your Firebase configuration object (UPDATED)
 const firebaseConfig = {
@@ -35,6 +40,60 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+async function callNewsService(payload) {
+    const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+    const response = await fetch(MASTER_WEB_APP_URL, {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, idToken }),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+    });
+    if (!response.ok) throw new Error(`News service returned ${response.status}`);
+    return response.json();
+}
+
+let undoTimer = null;
+async function deleteWithUndo(collectionName, id, data, label) {
+    if (!confirm(`Delete ${label}?`)) return;
+    await deleteDoc(doc(db, collectionName, id));
+    const toast = document.getElementById('undo-toast');
+    const message = document.getElementById('undo-toast-message');
+    const undoButton = document.getElementById('undo-toast-button');
+    message.textContent = `${label} deleted.`;
+    toast.classList.remove('hidden');
+    toast.classList.add('flex');
+    clearTimeout(undoTimer);
+    undoButton.onclick = async () => {
+        await setDoc(doc(db, collectionName, id), data);
+        toast.classList.add('hidden');
+        toast.classList.remove('flex');
+    };
+    undoTimer = setTimeout(() => {
+        toast.classList.add('hidden');
+        toast.classList.remove('flex');
+    }, 8000);
+}
+
+function enhanceAccessibility() {
+    let generatedId = 0;
+    document.querySelectorAll('input, select, textarea').forEach(control => {
+        if (control.type === 'hidden' || control.labels?.length || control.getAttribute('aria-label')) return;
+        const label = control.closest('div')?.querySelector('label');
+        if (!label) {
+            control.setAttribute('aria-label', control.name || control.placeholder || 'Form field');
+            return;
+        }
+        if (!control.id) control.id = `admin-control-${++generatedId}`;
+        label.htmlFor = control.id;
+    });
+    const names = [
+        ['.edit-post-btn, .edit-btn, .edit-addr, .edit-maint', 'Edit item'],
+        ['.delete-post-btn, .delete-ticker, .del-btn, .del-addr, .del-maint', 'Delete item']
+    ];
+    names.forEach(([selector, name]) => document.querySelectorAll(selector).forEach(button => button.setAttribute('aria-label', name)));
+}
+
+enhanceAccessibility();
+
 // --- Global variables for Firestore ---
 let currentUserId = null;
 let tasksCollectionRef = null;
@@ -47,6 +106,8 @@ let maintenanceCollectionRef = null;
 let maintenanceUnsubscribe = null;
 let tickerUnsubscribe = null;
 let layoutUnsubscribe = null; // New listener for layout
+let settingsInitialized = false;
+let settingsUnsubscribes = [];
 
 // --- ROUTER LOGIC (Replaces Tabs) ---
 window.Router = {
@@ -77,6 +138,7 @@ window.Router = {
         }
 
         this.current = viewId;
+        history.replaceState(null, '', `#${viewId}`);
         
         // Close mobile menu if open
         const sidebar = document.getElementById('sidebar');
@@ -84,6 +146,7 @@ window.Router = {
         sidebar.classList.remove('translate-x-0');
         sidebar.classList.add('-translate-x-full');
         overlay.classList.add('hidden');
+        document.getElementById('mobileMenuBtn').setAttribute('aria-expanded', 'false');
         
         // Restore desktop Sidebar visibility logic
         if(window.innerWidth >= 768) {
@@ -99,6 +162,7 @@ document.getElementById('mobileMenuBtn').addEventListener('click', () => {
     sidebar.classList.remove('-translate-x-full');
     sidebar.classList.add('translate-x-0');
     overlay.classList.remove('hidden');
+    document.getElementById('mobileMenuBtn').setAttribute('aria-expanded', 'true');
 });
 document.getElementById('sidebarOverlay').addEventListener('click', () => {
     const sidebar = document.getElementById('sidebar');
@@ -106,6 +170,7 @@ document.getElementById('sidebarOverlay').addEventListener('click', () => {
     sidebar.classList.add('-translate-x-full');
     sidebar.classList.remove('translate-x-0');
     overlay.classList.add('hidden');
+    document.getElementById('mobileMenuBtn').setAttribute('aria-expanded', 'false');
 });
 
 // --- SHARED HELPER FUNCTIONS ---
@@ -153,7 +218,7 @@ function showListMessage(area, message, type) {
 
 
 // --- 2. AUTHENTICATION & UI STATE ---
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
     const loginView = document.getElementById('login-view');
     const sidebar = document.getElementById('sidebar');
     const mobileHeader = document.getElementById('mobile-header');
@@ -161,9 +226,18 @@ onAuthStateChanged(auth, (user) => {
     const userStatus = document.getElementById('userStatus');
 
     if (user) {
+        const token = await getIdTokenResult(user, true);
+        if (token.claims.admin !== true) {
+            const errBox = document.getElementById('login-error');
+            document.getElementById('login-error-msg').textContent = 'This account is not authorized as a dashboard administrator.';
+            errBox.classList.remove('hidden');
+            await signOut(auth);
+            return;
+        }
         // Logged In
         currentUserId = user.uid;
         userStatus.textContent = user.email;
+        userStatus.title = 'Verified administrator';
         
         loginView.classList.add('login-fade-out'); // Animation class in CSS
         setTimeout(() => loginView.classList.add('hidden'), 500);
@@ -183,9 +257,13 @@ onAuthStateChanged(auth, (user) => {
         setupTickerLogic();
         fetchPosts();
         setupForceReloadLogic(); // NEW: Force Reload logic
+        setupSystemSettings();
         
         // Start Layout Listener
         setupRealtimeLayout();
+        enhanceAccessibility();
+        const requestedView = location.hash.replace('#', '');
+        if (requestedView && document.getElementById(`view-${requestedView}`)) window.Router.navigate(requestedView);
         
     } else {
         // Logged Out
@@ -205,6 +283,9 @@ onAuthStateChanged(auth, (user) => {
         if(maintenanceUnsubscribe) maintenanceUnsubscribe();
         if(tickerUnsubscribe) tickerUnsubscribe();
         if(layoutUnsubscribe) layoutUnsubscribe();
+        settingsUnsubscribes.forEach(unsubscribe => unsubscribe());
+        settingsUnsubscribes = [];
+        settingsInitialized = false;
     }
 });
 
@@ -309,11 +390,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const dataObject = Object.fromEntries(formData.entries());
             dataObject.action = 'addPost';
 
-            fetch(MASTER_WEB_APP_URL, { 
-                method: 'POST', body: JSON.stringify(dataObject),
-                headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-            })
-            .then(res => res.json())
+            callNewsService(dataObject)
             .then(data => {
                 if(data.status === 'success') {
                     showMessage(document.getElementById('message-box-news'), 'Post published!', 'success');
@@ -328,6 +405,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Refresh Posts Button
     document.getElementById('refresh-posts-button').addEventListener('click', fetchPosts);
+    document.getElementById('post-status-filter').addEventListener('change', fetchPosts);
+    document.getElementById('preview-post-button').addEventListener('click', () => {
+        const formData = new FormData(newsForm);
+        const preview = document.getElementById('news-preview');
+        preview.replaceChildren();
+        const title = document.createElement('h3');
+        title.className = 'text-2xl font-bold mb-2';
+        title.textContent = formData.get('Title') || formData.get('Title *') || 'Untitled post';
+        const description = document.createElement('p');
+        description.className = 'text-gray-200 whitespace-pre-wrap';
+        description.textContent = formData.get('Description') || '';
+        preview.append(title, description);
+        preview.classList.remove('hidden');
+    });
+    enhanceAccessibility();
 });
 
 // Fetch Posts Logic
@@ -342,26 +434,26 @@ async function fetchPosts() {
     container.innerHTML = '';
     
     try {
-        const response = await fetch(MASTER_WEB_APP_URL, {
-            method: 'POST', body: JSON.stringify({ action: 'getPosts' }),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-        });
-        const result = await response.json();
+        const result = await callNewsService({ action: 'getPosts' });
         
         if (result.status === 'success' && result.data.length > 0) {
             msgArea.classList.add('hidden');
-            result.data.forEach(post => {
+            const selectedStatus = document.getElementById('post-status-filter')?.value || 'active';
+            const posts = result.data.filter(post => selectedStatus === 'all' || getPostStatus(post) === selectedStatus);
+            posts.forEach(post => {
+                const status = getPostStatus(post);
+                const statusClass = status === 'active' ? 'bg-green-100 text-green-700' : status === 'upcoming' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600';
                 // Create Card
                 const card = document.createElement('div');
                 card.className = 'p-4 border border-gray-100 rounded-lg shadow-sm bg-white hover:shadow-md transition';
                 card.innerHTML = `
                     <div class="flex justify-between items-start">
                         <div>
-                            <h3 class="text-base font-bold text-gray-900">${post.title}</h3>
+                            <div class="flex items-center gap-2"><h3 class="text-base font-bold text-gray-900">${escapeHtml(post.title)}</h3><span class="text-xs px-2 py-1 rounded-full ${statusClass}">${status}</span></div>
                             <p class="text-xs text-gray-500 mt-1">
-                                <i class="fa-solid fa-user mr-1"></i> ${post.postedBy} 
+                                <i class="fa-solid fa-user mr-1"></i> ${escapeHtml(post.postedBy)} 
                                 <span class="mx-2">•</span> 
-                                <i class="fa-solid fa-users mr-1"></i> ${post.appliesTo}
+                                <i class="fa-solid fa-users mr-1"></i> ${escapeHtml(post.appliesTo)}
                             </p>
                         </div>
                         <div class="flex space-x-2">
@@ -369,9 +461,9 @@ async function fetchPosts() {
                              <button class="delete-post-btn text-gray-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition"><i class="fa-solid fa-trash"></i></button>
                         </div>
                     </div>
-                    <p class="text-sm text-gray-700 mt-3 whitespace-pre-wrap">${post.description}</p>
+                    <p class="text-sm text-gray-700 mt-3 whitespace-pre-wrap">${escapeHtml(post.description)}</p>
                     <div class="mt-4 pt-3 border-t border-gray-50 flex flex-wrap gap-4 text-xs text-gray-400">
-                        <span><i class="fa-solid fa-location-dot mr-1"></i> ${post.location}</span>
+                        <span><i class="fa-solid fa-location-dot mr-1"></i> ${escapeHtml(post.location)}</span>
                         <span><i class="fa-regular fa-clock mr-1"></i> Post: ${formatSheetDate(post.postDate)}</span>
                         ${post.removeDate ? `<span><i class="fa-solid fa-calendar-xmark mr-1"></i> Ends: ${formatSheetDate(post.removeDate, false)}</span>` : ''}
                     </div>
@@ -386,6 +478,11 @@ async function fetchPosts() {
                 
                 container.appendChild(card);
             });
+            if (!posts.length) {
+                msgArea.textContent = `No ${selectedStatus} posts found.`;
+                msgArea.classList.remove('hidden');
+            }
+            enhanceAccessibility();
         } else {
             msgArea.textContent = 'No active posts found.';
             msgArea.classList.remove('hidden');
@@ -398,10 +495,7 @@ async function handleDeletePost(rowId, btn) {
     if(!confirm('Are you sure you want to delete this post?')) return;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     try {
-        await fetch(MASTER_WEB_APP_URL, {
-            method: 'POST', body: JSON.stringify({ action: 'deletePost', rowId }),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-        });
+        await callNewsService({ action: 'deletePost', rowId });
         fetchPosts();
     } catch(e) { alert(e.message); btn.innerHTML = '<i class="fa-solid fa-trash"></i>'; }
 }
@@ -438,10 +532,7 @@ editForm.addEventListener('submit', async (e) => {
     const data = Object.fromEntries(formData.entries());
 
     try {
-        await fetch(MASTER_WEB_APP_URL, {
-            method: 'POST', body: JSON.stringify({ action: 'updatePost', rowId: data.rowId, data }),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-        });
+        await callNewsService({ action: 'updatePost', rowId: data.rowId, data });
         editModal.style.display = 'none';
         fetchPosts();
     } catch(e) { alert(e.message); }
@@ -491,7 +582,7 @@ function setupTickerLogic() {
             div.className = 'bg-white border border-gray-100 rounded-lg p-4 shadow-sm flex justify-between items-center hover:shadow-md transition';
             div.innerHTML = `
                 <div>
-                    <p class="font-bold text-gray-800 text-sm">${data.message}</p>
+                    <p class="font-bold text-gray-800 text-sm">${escapeHtml(data.message)}</p>
                     <p class="text-xs text-gray-500 mt-1">
                         <i class="fa-regular fa-clock mr-1"></i> ${new Date(data.startDateTime).toLocaleString()} - ${new Date(data.endDateTime).toLocaleString()}
                     </p>
@@ -505,9 +596,9 @@ function setupTickerLogic() {
 
         document.querySelectorAll('.delete-ticker').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                if(confirm('Delete this ticker?')) {
-                    await deleteDoc(doc(db, 'ticker', e.currentTarget.dataset.id));
-                }
+                const id = e.currentTarget.dataset.id;
+                const snapshot = await getDoc(doc(db, 'ticker', id));
+                if (snapshot.exists()) await deleteWithUndo('ticker', id, snapshot.data(), 'ticker message');
             });
         });
     });
@@ -565,11 +656,11 @@ function setupUnitStatusLogic() {
                 <div class="p-4 border border-gray-200 rounded-lg bg-white shadow-sm flex flex-col justify-between">
                     <div>
                         <div class="flex justify-between items-start mb-2">
-                            <h3 class="font-bold text-gray-900">${u.unit}</h3>
-                            <span class="text-xs font-bold px-2 py-1 rounded-full ${color}">${u.status}</span>
+                            <h3 class="font-bold text-gray-900">${escapeHtml(u.unit)}</h3>
+                            <span class="text-xs font-bold px-2 py-1 rounded-full ${color}">${escapeHtml(u.status)}</span>
                         </div>
-                        <p class="text-sm text-gray-600"><span class="font-semibold">Loc:</span> ${u.location}</p>
-                        <p class="text-sm text-gray-500 italic mt-1">"${u.comments || '-'}"</p>
+                        <p class="text-sm text-gray-600"><span class="font-semibold">Loc:</span> ${escapeHtml(u.location)}</p>
+                        <p class="text-sm text-gray-500 italic mt-1">"${escapeHtml(u.comments || '-')}"</p>
                     </div>
                     <p class="text-xs text-gray-400 mt-3 pt-2 border-t text-right">Updated: ${formatFirestoreTimestamp(u.reported)}</p>
                 </div>
@@ -616,19 +707,19 @@ function setupTaskLogic() {
             div.className = 'p-3 border border-gray-200 rounded-lg shadow-sm bg-white hover:bg-gray-50 transition';
             div.innerHTML = `
                 <div class="flex justify-between items-start">
-                    <h3 class="font-bold text-gray-800 text-sm">${t.task}</h3>
+                    <h3 class="font-bold text-gray-800 text-sm">${escapeHtml(t.task)}</h3>
                     <div class="flex space-x-1">
                         <button class="edit-btn text-blue-500 hover:bg-blue-100 p-1 rounded"><i class="fa-solid fa-pen"></i></button>
                         <button class="del-btn text-gray-400 hover:text-red-600 hover:bg-red-50 p-1 rounded"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 </div>
                 <div class="text-xs text-gray-500 mt-2 flex justify-between">
-                    <span><i class="fa-solid fa-user mr-1"></i> ${t.assignee}</span>
-                    <span class="font-medium text-indigo-600">${Array.isArray(t.day) ? t.day.join(', ') : t.day}</span>
+                    <span><i class="fa-solid fa-user mr-1"></i> ${escapeHtml(t.assignee)}</span>
+                    <span class="font-medium text-indigo-600">${escapeHtml(Array.isArray(t.day) ? t.day.join(', ') : t.day)}</span>
                 </div>
             `;
             
-            div.querySelector('.del-btn').addEventListener('click', () => deleteDoc(doc(db, 'dailyTasks', d.id)));
+            div.querySelector('.del-btn').addEventListener('click', () => deleteWithUndo('dailyTasks', d.id, t, 'daily task'));
             div.querySelector('.edit-btn').addEventListener('click', () => showEditTaskModal(d.id, t));
             
             container.appendChild(div);
@@ -707,16 +798,16 @@ function setupAddressLogic() {
             div.className = 'p-4 border border-gray-200 rounded-lg shadow-sm bg-white hover:shadow-md transition';
             div.innerHTML = `
                 <div class="flex justify-between items-start">
-                    <h3 class="font-bold text-gray-900">${a.address}</h3>
+                    <h3 class="font-bold text-gray-900">${escapeHtml(a.address)}</h3>
                     <div class="flex space-x-2">
-                        <span class="text-xs px-2 py-1 rounded ${color} font-bold mr-2">${a.priority}</span>
+                        <span class="text-xs px-2 py-1 rounded ${color} font-bold mr-2">${escapeHtml(a.priority)}</span>
                         <button class="edit-addr text-blue-500 hover:text-blue-700"><i class="fa-solid fa-pen"></i></button>
                         <button class="del-addr text-gray-400 hover:text-red-600"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 </div>
-                <p class="text-sm text-gray-600 mt-2">${a.note}</p>
+                <p class="text-sm text-gray-600 mt-2">${escapeHtml(a.note)}</p>
             `;
-            div.querySelector('.del-addr').onclick = () => { if(confirm('Delete?')) deleteDoc(doc(db, 'addressNotes', d.id)); };
+            div.querySelector('.del-addr').onclick = () => deleteWithUndo('addressNotes', d.id, a, 'address alert');
             div.querySelector('.edit-addr').onclick = () => showEditAddrModal(d.id, a);
             container.appendChild(div);
         });
@@ -787,19 +878,19 @@ function setupMaintenanceLogic() {
             div.className = 'p-3 border border-gray-200 rounded-lg shadow-sm bg-white hover:bg-gray-50 transition';
             div.innerHTML = `
                 <div class="flex justify-between items-start">
-                    <h3 class="font-bold text-gray-800 text-sm">${m.service}</h3>
+                    <h3 class="font-bold text-gray-800 text-sm">${escapeHtml(m.service)}</h3>
                     <div class="flex space-x-1">
                         <button class="edit-maint text-blue-500 hover:bg-blue-100 p-1 rounded"><i class="fa-solid fa-pen"></i></button>
                         <button class="del-maint text-gray-400 hover:text-red-600 hover:bg-red-50 p-1 rounded"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 </div>
                 <div class="mt-2 text-xs text-gray-500 grid grid-cols-2 gap-2">
-                    <span><i class="fa-solid fa-store mr-1"></i> ${m.vendor}</span>
-                    <span><i class="fa-solid fa-location-dot mr-1"></i> ${m.location}</span>
+                    <span><i class="fa-solid fa-store mr-1"></i> ${escapeHtml(m.vendor)}</span>
+                    <span><i class="fa-solid fa-location-dot mr-1"></i> ${escapeHtml(m.location)}</span>
                 </div>
-                <p class="text-xs text-gray-400 mt-2 border-t pt-1"><i class="fa-regular fa-calendar mr-1"></i> ${m.date}</p>
+                <p class="text-xs text-gray-400 mt-2 border-t pt-1"><i class="fa-regular fa-calendar mr-1"></i> ${escapeHtml(m.date)}</p>
             `;
-            div.querySelector('.del-maint').onclick = () => { if(confirm('Delete?')) deleteDoc(doc(db, 'maintenance', m.id)); };
+            div.querySelector('.del-maint').onclick = () => deleteWithUndo('maintenance', m.id, m, 'maintenance entry');
             div.querySelector('.edit-maint').onclick = () => showEditMaintModal(m.id, m);
             container.appendChild(div);
         });
@@ -833,6 +924,126 @@ maintForm.onsubmit = async (e) => {
     }, {merge: true});
     maintModal.style.display = 'none';
 };
+
+// --- CONSOLIDATED DISPLAY SETTINGS ---
+async function setupSystemSettings() {
+    if (settingsInitialized) return;
+    settingsInitialized = true;
+
+    const configRef = doc(db, 'config', 'global');
+    const translationsRef = doc(db, 'config', 'translations');
+    const slidesRef = collection(db, 'slides');
+    const status = document.getElementById('settings-sync-status');
+    const fields = {
+        weather_locationName: 'setting-weather-name', weather_latitude: 'setting-weather-lat', weather_longitude: 'setting-weather-lon',
+        weather_refreshIntervalMinutes: 'setting-weather-refresh', googleSlides_scriptUrl: 'setting-slides-script', googleSlides_embedUrlBase: 'setting-slides-url',
+        googleSlides_delayPerSlideSeconds: 'setting-slide-delay', googleSlides_refreshIntervalMinutes: 'setting-slide-refresh', newsFeed_secondsPerItem: 'setting-news-seconds',
+        nwsAlertZone: 'setting-nws-zone', nwsAlertRefreshSeconds: 'setting-nws-refresh', dispatchAlertDurationSeconds: 'setting-dispatch-duration', logoUrl: 'setting-logo-url'
+    };
+
+    const configSnapshot = await getDoc(configRef);
+    const config = configSnapshot.exists() ? configSnapshot.data() : {};
+    const defaults = { weather_locationName:'South Vienna', weather_latitude:39.9231, weather_longitude:-83.5652, weather_refreshIntervalMinutes:10, googleSlides_delayPerSlideSeconds:20, googleSlides_refreshIntervalMinutes:10, newsFeed_secondsPerItem:20, nwsAlertRefreshSeconds:300, dispatchAlertDurationSeconds:120 };
+    Object.entries(fields).forEach(([key, id]) => { document.getElementById(id).value = config[key] ?? defaults[key] ?? ''; });
+    status.textContent = `Loaded ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+
+    document.getElementById('system-settings-form').onsubmit = async (event) => {
+        event.preventDefault();
+        const numberKeys = new Set(['weather_latitude','weather_longitude','weather_refreshIntervalMinutes','googleSlides_delayPerSlideSeconds','googleSlides_refreshIntervalMinutes','newsFeed_secondsPerItem','nwsAlertRefreshSeconds','dispatchAlertDurationSeconds']);
+        const payload = {};
+        Object.entries(fields).forEach(([key, id]) => {
+            const value = document.getElementById(id).value.trim();
+            payload[key] = numberKeys.has(key) ? Number(value) : value;
+        });
+        payload.lastUpdated = new Date().toISOString();
+        await setDoc(configRef, payload, { merge: true });
+        status.textContent = 'Settings saved';
+    };
+
+    const manualForm = document.getElementById('manual-alert-form');
+    const renderManualPreview = () => {
+        const preview = document.getElementById('manual-alert-preview');
+        preview.replaceChildren();
+        const heading = document.createElement('h3'); heading.className = 'text-2xl font-black mb-2'; heading.textContent = document.getElementById('manual-alert-title').value;
+        const message = document.createElement('p'); message.className = 'text-xl font-bold'; message.textContent = document.getElementById('manual-alert-message').value;
+        preview.append(heading, message); preview.classList.remove('hidden');
+    };
+    document.getElementById('preview-manual-alert').onclick = renderManualPreview;
+    manualForm.onsubmit = async (event) => {
+        event.preventDefault();
+        renderManualPreview();
+        if (!confirm('Send this alert to every dashboard?')) return;
+        await setDoc(doc(db, 'alerts', 'manual_alert'), {
+            eventId: crypto.randomUUID(),
+            title: document.getElementById('manual-alert-title').value.trim(),
+            message: document.getElementById('manual-alert-message').value.trim(),
+            duration: Number(document.getElementById('manual-alert-duration').value) * 1000,
+            tone: 'alarm', timestamp: new Date().toISOString(), triggeredBy: auth.currentUser?.email || 'unknown'
+        });
+        status.textContent = 'Manual alert sent';
+    };
+
+    document.getElementById('translation-form').onsubmit = async (event) => {
+        event.preventDefault();
+        const original = document.getElementById('translation-original').value.trim().toLowerCase();
+        const replacement = document.getElementById('translation-short').value.trim();
+        if (!original || !replacement) return;
+        await setDoc(translationsRef, { [original]: replacement }, { merge: true });
+        event.target.reset();
+    };
+
+    settingsUnsubscribes.push(onSnapshot(translationsRef, snapshot => {
+        const list = document.getElementById('translation-list'); list.replaceChildren();
+        const translations = snapshot.exists() ? snapshot.data() : {};
+        Object.keys(translations).sort().forEach(key => {
+            const row = document.createElement('div'); row.className = 'flex justify-between items-center bg-gray-50 rounded-lg p-3';
+            const label = document.createElement('span'); label.textContent = `${key} → ${translations[key]}`;
+            const remove = document.createElement('button'); remove.className = 'text-red-600 font-medium'; remove.textContent = 'Remove'; remove.setAttribute('aria-label', `Remove translation ${key}`);
+            remove.onclick = async () => { if (confirm(`Remove translation for “${key}”?`)) await updateDoc(translationsRef, { [key]: deleteField() }); };
+            row.append(label, remove); list.append(row);
+        });
+        if (!Object.keys(translations).length) list.textContent = 'No translations configured.';
+    }));
+
+    const slideForm = document.getElementById('managed-slide-form');
+    const previewSlide = () => {
+        const url = document.getElementById('managed-slide-url').value;
+        const preview = document.getElementById('managed-slide-preview');
+        try { preview.querySelector('iframe').src = new URL(url).href; preview.classList.remove('hidden'); } catch (_) { preview.classList.add('hidden'); }
+    };
+    document.getElementById('preview-managed-slide').onclick = previewSlide;
+    slideForm.onsubmit = async (event) => {
+        event.preventDefault();
+        const url = new URL(document.getElementById('managed-slide-url').value);
+        if (url.protocol !== 'https:') throw new Error('Managed slides must use HTTPS.');
+        await addDoc(slidesRef, {
+            type:'iframe', url:url.href, title:document.getElementById('managed-slide-title').value.trim(),
+            duration:Number(document.getElementById('managed-slide-duration').value) * 1000,
+            order:Number(document.getElementById('managed-slide-order').value),
+            expiresAt:document.getElementById('managed-slide-expires').value || null,
+            createdAt:serverTimestamp(), createdBy:auth.currentUser?.email || 'unknown'
+        });
+        slideForm.reset(); document.getElementById('managed-slide-preview').classList.add('hidden');
+    };
+
+    settingsUnsubscribes.push(onSnapshot(query(slidesRef, orderBy('order')), snapshot => {
+        const list = document.getElementById('managed-slide-list'); list.replaceChildren();
+        snapshot.forEach(slideDocument => {
+            const slide = slideDocument.data();
+            const expired = isContentExpired(slide.expiresAt);
+            const row = document.createElement('div'); row.className = 'flex flex-col md:flex-row md:items-center justify-between gap-3 border rounded-lg p-4';
+            const info = document.createElement('div');
+            const title = document.createElement('p'); title.className = 'font-bold'; title.textContent = slide.title || 'Managed slide';
+            const detail = document.createElement('p'); detail.className = 'text-sm text-gray-500 break-all'; detail.textContent = `${slide.url || 'Legacy slide'} · ${Math.round((slide.duration || 0)/1000)}s · order ${slide.order ?? '-'}`;
+            info.append(title, detail);
+            if (expired) { const badge=document.createElement('span'); badge.className='text-xs bg-gray-200 rounded px-2 py-1'; badge.textContent='Expired'; info.append(badge); }
+            const remove = document.createElement('button'); remove.className = 'text-red-600 font-medium'; remove.textContent = 'Delete'; remove.onclick = () => deleteWithUndo('slides', slideDocument.id, slide, 'slide');
+            row.append(info, remove); list.append(row);
+        });
+        if (snapshot.empty) list.textContent = 'No managed slides.';
+    }));
+    enhanceAccessibility();
+}
 
 // --- NEW: FORCE RELOAD LOGIC ---
 function setupForceReloadLogic() {
